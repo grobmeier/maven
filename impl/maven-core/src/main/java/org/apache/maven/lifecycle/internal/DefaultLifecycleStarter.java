@@ -57,6 +57,8 @@ public class DefaultLifecycleStarter implements LifecycleStarter {
 
     private final Map<String, Builder> builders;
 
+    private final SequentialRootAggregationCoordinator rootAggregationCoordinator;
+
     @Inject
     public DefaultLifecycleStarter(
             ExecutionEventCatapult eventCatapult,
@@ -64,13 +66,15 @@ public class DefaultLifecycleStarter implements LifecycleStarter {
             BuildListCalculator buildListCalculator,
             LifecycleDebugLogger lifecycleDebugLogger,
             LifecycleTaskSegmentCalculator lifecycleTaskSegmentCalculator,
-            Map<String, Builder> builders) {
+            Map<String, Builder> builders,
+            SequentialRootAggregationCoordinator rootAggregationCoordinator) {
         this.eventCatapult = eventCatapult;
         this.defaultLifeCycles = defaultLifeCycles;
         this.buildListCalculator = buildListCalculator;
         this.lifecycleDebugLogger = lifecycleDebugLogger;
         this.lifecycleTaskSegmentCalculator = lifecycleTaskSegmentCalculator;
         this.builders = builders;
+        this.rootAggregationCoordinator = rootAggregationCoordinator;
     }
 
     @Override
@@ -120,7 +124,11 @@ public class DefaultLifecycleStarter implements LifecycleStarter {
                         "Using the %s implementation with a thread count of %d",
                         builder.getClass().getSimpleName(), degreeOfConcurrency));
             }
-            builder.build(session, reactorContext, projectBuilds, taskSegments, reactorBuildStatus);
+            if (rootAggregationCoordinator.canDefer(session, builder, projectBuilds, taskSegments)) {
+                rootAggregationCoordinator.build(session, reactorContext, projectBuilds, taskSegments, builder);
+            } else {
+                builder.build(session, reactorContext, projectBuilds, taskSegments, reactorBuildStatus);
+            }
 
         } catch (Exception e) {
             result.addException(e);
