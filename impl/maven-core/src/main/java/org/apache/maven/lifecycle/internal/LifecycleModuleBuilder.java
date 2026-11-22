@@ -34,6 +34,7 @@ import org.apache.maven.execution.MavenSession;
 import org.apache.maven.execution.ProjectExecutionEvent;
 import org.apache.maven.execution.ProjectExecutionListener;
 import org.apache.maven.internal.transformation.TransformerManager;
+import org.apache.maven.lifecycle.LifecycleExecutionException;
 import org.apache.maven.lifecycle.MavenExecutionPlan;
 import org.apache.maven.lifecycle.internal.builder.BuilderCommon;
 import org.apache.maven.plugin.MojoExecution;
@@ -82,6 +83,21 @@ public class LifecycleModuleBuilder {
             ReactorContext reactorContext,
             MavenProject currentProject,
             TaskSegment taskSegment) {
+        buildProject(session, rootSession, reactorContext, currentProject, taskSegment, false);
+    }
+
+    DeferredRootBuild buildProjectWithDeferredRootAggregators(
+            MavenSession session, ReactorContext reactorContext, MavenProject project, TaskSegment taskSegment) {
+        return buildProject(session, session, reactorContext, project, taskSegment, true);
+    }
+
+    private DeferredRootBuild buildProject(
+            MavenSession session,
+            MavenSession rootSession,
+            ReactorContext reactorContext,
+            MavenProject currentProject,
+            TaskSegment taskSegment,
+            boolean reserveRootAggregators) {
         session.setCurrentProject(currentProject);
 
         Instant buildStartTime = MonotonicClock.now();
@@ -91,7 +107,7 @@ public class LifecycleModuleBuilder {
 
             if (reactorContext.getReactorBuildStatus().isHaltedOrBlacklisted(currentProject)) {
                 eventCatapult.fire(ExecutionEvent.Type.ProjectSkipped, session, null);
-                return;
+                return null;
             }
 
             transformerManager.injectTransformedArtifacts(session.getRepositorySession(), currentProject);
@@ -105,10 +121,19 @@ public class LifecycleModuleBuilder {
             MavenExecutionPlan executionPlan =
                     builderCommon.resolveBuildPlan(session, currentProject, taskSegment, new HashSet<>());
             List<MojoExecution> mojoExecutions = executionPlan.getMojoExecutions();
+            RootAggregatorExecutionPlan partition = reserveRootAggregators
+                    ? RootAggregatorExecutionPlan.partition(session, currentProject, taskSegment, executionPlan)
+                    : null;
 
             projectExecutionListener.beforeProjectLifecycleExecution(
                     new ProjectExecutionEvent(session, currentProject, mojoExecutions));
-            mojoExecutor.execute(session, mojoExecutions);
+            boolean hasDeferredExecutions =
+                    partition != null && !partition.getDeferredExecutions().isEmpty();
+            mojoExecutor.execute(session, hasDeferredExecutions ? partition.getProjectExecutions() : mojoExecutions);
+
+            if (hasDeferredExecutions) {
+                return new DeferredRootBuild(partition, buildStartTime);
+            }
 
             Instant buildEndTime = MonotonicClock.now();
 
@@ -140,6 +165,62 @@ public class LifecycleModuleBuilder {
             session.setCurrentProject(null);
 
             Thread.currentThread().setContextClassLoader(reactorContext.getOriginalContextClassLoader());
+        }
+        return null;
+    }
+
+    void completeDeferredRootProject(
+            MavenSession session,
+            ReactorContext reactorContext,
+            DeferredRootBuild deferred,
+            boolean requiredWorkSucceeded) {
+        if (deferred.completed) {
+            throw new IllegalStateException("The deferred root build is already complete");
+        }
+        deferred.completed = true;
+        MavenProject project = deferred.plan.getProject();
+        MavenProject previousProject = session.getCurrentProject();
+        ClassLoader previousLoader = Thread.currentThread().getContextClassLoader();
+        session.setCurrentProject(project);
+        try {
+            BuilderCommon.attachToThread(project);
+            if (!requiredWorkSucceeded) {
+                throw new LifecycleExecutionException(
+                        "Deferred root aggregators were skipped because selected reactor work did not succeed.",
+                        null,
+                        project);
+            }
+            mojoExecutor.execute(session, deferred.plan.getDeferredExecutions());
+            projectExecutionListener.afterProjectExecutionSuccess(new ProjectExecutionEvent(
+                    session, project, deferred.plan.getCompletePlan().getMojoExecutions()));
+            reactorContext
+                    .getResult()
+                    .addBuildSummary(
+                            new BuildSuccess(project, Duration.between(deferred.buildStartTime, MonotonicClock.now())));
+            eventCatapult.fire(ExecutionEvent.Type.ProjectSucceeded, session, null);
+        } catch (Throwable t) {
+            builderCommon.handleBuildError(reactorContext, session, session, project, t, deferred.buildStartTime);
+            projectExecutionListener.afterProjectExecutionFailure(new ProjectExecutionEvent(session, project, t));
+            if (t instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            if (t instanceof Error error) {
+                throw error;
+            }
+        } finally {
+            session.setCurrentProject(previousProject);
+            Thread.currentThread().setContextClassLoader(previousLoader);
+        }
+    }
+
+    static final class DeferredRootBuild {
+        private final RootAggregatorExecutionPlan plan;
+        private final Instant buildStartTime;
+        private boolean completed;
+
+        private DeferredRootBuild(RootAggregatorExecutionPlan plan, Instant buildStartTime) {
+            this.plan = plan;
+            this.buildStartTime = buildStartTime;
         }
     }
 }
