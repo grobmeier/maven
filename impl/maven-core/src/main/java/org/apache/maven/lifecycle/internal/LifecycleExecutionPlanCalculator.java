@@ -50,6 +50,26 @@ public interface LifecycleExecutionPlanCalculator {
                     PluginDescriptorParsingException, MojoNotFoundException, InvalidPluginDescriptorException,
                     NoPluginFoundForPrefixException, LifecycleNotFoundException, PluginVersionResolutionException;
 
+    /**
+     * Prepares a complete plan and explicitly reserves eligible root aggregators
+     * for an orchestrator.
+     *
+     * Eligibility requires:
+     *  - a selected execution root a
+     *  - a single-worker, singlethreaded, lifecycle-only task segment
+     *
+     * Goals must be aggregators with an explicit, literal {@code after:all}
+     * binding in the effective project model.
+     */
+    default RootAggregatorExecutionPlan calculateExecutionPlanWithDeferredRootAggregators(
+            MavenSession session, MavenProject project, TaskSegment taskSegment)
+            throws PluginNotFoundException, PluginResolutionException, LifecyclePhaseNotFoundException,
+                    PluginDescriptorParsingException, MojoNotFoundException, InvalidPluginDescriptorException,
+                    NoPluginFoundForPrefixException, LifecycleNotFoundException, PluginVersionResolutionException {
+        MavenExecutionPlan completePlan = calculateExecutionPlan(session, project, taskSegment.getTasks(), true);
+        return RootAggregatorExecutionPlan.partition(session, project, taskSegment, completePlan);
+    }
+
     void calculateForkedExecutions(MojoExecution mojoExecution, MavenSession session)
             throws MojoNotFoundException, PluginNotFoundException, PluginResolutionException,
                     PluginDescriptorParsingException, NoPluginFoundForPrefixException, InvalidPluginDescriptorException,
