@@ -21,8 +21,10 @@ package org.apache.maven.it;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -68,6 +70,34 @@ public class MavenITmng13763ConcurrentAggregatorTest extends AbstractMavenIntegr
         assertThrows(VerificationException.class, verifier::execute);
 
         assertFalse(Files.exists(testDir.resolve("reactor/target/aggregate-observed.txt")));
+    }
+
+    @Test
+    void skipsRootAfterAllWhenVerificationFailsAfterOutput(@TempDir Path reactor) throws Exception {
+        installPlugin(extractResources("mng-13763"));
+        Path fixture = extractResources("sequential-root-aggregation");
+        for (String relative : List.of("pom.xml", "a/pom.xml", "b/pom.xml")) {
+            Path destination = reactor.resolve(relative);
+            Files.createDirectories(destination.getParent());
+            Files.copy(fixture.resolve(relative), destination);
+        }
+
+        Verifier verifier = newVerifier(reactor);
+        if (Boolean.parseBoolean(System.getenv("MAVEN_CONCURRENT_AGGREGATION_DEBUG"))) {
+            verifier.addJvmArgument("-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:8000");
+        }
+        verifier.addCliArguments("--builder", "concurrent", "-T1", "--fail-fast", "-DverificationFailure=a", "verify");
+        assertThrows(VerificationException.class, verifier::execute);
+        verifier.verifyTextInLog("Intentional failure in a");
+        verifier.verifyTextInLog("(fail-after-output)");
+        assertEquals("a", Files.readString(reactor.resolve("a/target/touched.txt")));
+        assertEquals("b", Files.readString(reactor.resolve("b/target/touched.txt")));
+        assertTrue(Files.isRegularFile(reactor.resolve("target/touched.txt")), "Root cleanup must still run");
+
+        assertFalse(
+                Files.exists(reactor.resolve("target/aggregate-observed.txt"))
+                        || Files.exists(reactor.resolve("target/aggregate.jar")),
+                "Root after:all must not produce a successful aggregate after child verification fails");
     }
 
     @Test

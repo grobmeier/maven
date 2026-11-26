@@ -46,6 +46,13 @@ under the License.
         </configuration>
         <executions>
           <execution>
+            <id>cleanup</id>
+            <phase>after:all</phase>
+            <goals>
+              <goal>touch</goal>
+            </goals>
+          </execution>
+          <execution>
             <id>aggregate</id>
             <phase>after:all</phase>
             <goals>

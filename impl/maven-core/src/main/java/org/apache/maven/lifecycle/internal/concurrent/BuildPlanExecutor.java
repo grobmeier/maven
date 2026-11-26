@@ -99,6 +99,7 @@ import org.slf4j.LoggerFactory;
 import static org.apache.maven.api.Lifecycle.AFTER;
 import static org.apache.maven.api.Lifecycle.AT;
 import static org.apache.maven.api.Lifecycle.BEFORE;
+import static org.apache.maven.api.Lifecycle.Phase.ALL;
 import static org.apache.maven.api.Lifecycle.Phase.PACKAGE;
 import static org.apache.maven.api.Lifecycle.Phase.READY;
 import static org.apache.maven.lifecycle.internal.concurrent.BuildStep.CREATED;
@@ -749,6 +750,16 @@ public class BuildPlanExecutor {
                     break;
                 default:
                     List<MojoExecution> executions = step.executions().toList();
+                    // An after:all hook can run for cleanup even when earlier work failed.
+                    // Run its cleanup goals, but suppress aggregation unless the required work succeeded.
+                    boolean skipAggregation = (AFTER + ALL).equals(step.name)
+                            && executions.stream().anyMatch(execution -> execution.getMojoDescriptor().isAggregator())
+                            && !aggregationWorkSucceeded(step);
+                    if (skipAggregation) {
+                        executions = executions.stream()
+                                .filter(execution -> !execution.getMojoDescriptor().isAggregator())
+                                .toList();
+                    }
                     if (!executions.isEmpty()) {
                         attachToThread(step);
                         clock.start();
@@ -761,6 +772,9 @@ public class BuildPlanExecutor {
                         } finally {
                             clock.stop();
                         }
+                    }
+                    if (skipAggregation) {
+                        step.status.compareAndSet(SCHEDULED, SKIPPED);
                     }
                     break;
             }
