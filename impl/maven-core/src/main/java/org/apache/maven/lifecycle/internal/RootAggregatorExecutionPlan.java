@@ -67,11 +67,14 @@ public final class RootAggregatorExecutionPlan {
         Objects.requireNonNull(taskSegment);
         Objects.requireNonNull(completePlan);
 
+        String builderId = session.getRequest().getBuilderId();
+        int workers = session.getRequest().getDegreeOfConcurrency();
+        boolean legacyBuilder = ("singlethreaded".equals(builderId) && workers == 1)
+                || ("multithreaded".equals(builderId) && workers > 1);
         // A selected child can be the top-level fallback without being the invocation's execution root.
         boolean eligibleContext = project.isExecutionRoot()
                 && project == session.getTopLevelProject()
-                && "singlethreaded".equals(session.getRequest().getBuilderId())
-                && session.getRequest().getDegreeOfConcurrency() == 1
+                && legacyBuilder
                 && !taskSegment.isAggregating()
                 && !taskSegment.getTasks().isEmpty()
                 && taskSegment.getTasks().stream().allMatch(LifecycleTask.class::isInstance);

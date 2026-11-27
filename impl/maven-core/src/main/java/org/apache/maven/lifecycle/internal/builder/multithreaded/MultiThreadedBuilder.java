@@ -32,12 +32,16 @@ import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+import org.apache.maven.execution.BuildSuccess;
 import org.apache.maven.execution.MavenSession;
 import org.apache.maven.lifecycle.internal.BuildThreadFactory;
 import org.apache.maven.lifecycle.internal.LifecycleModuleBuilder;
+import org.apache.maven.lifecycle.internal.LifecycleModuleBuilder.DeferredRootBuild;
+import org.apache.maven.lifecycle.internal.LifecycleTask;
 import org.apache.maven.lifecycle.internal.ProjectBuildList;
 import org.apache.maven.lifecycle.internal.ProjectSegment;
 import org.apache.maven.lifecycle.internal.ReactorBuildStatus;
@@ -92,6 +96,8 @@ public class MultiThreadedBuilder implements Builder {
         }
         ExecutorService executor = Executors.newFixedThreadPool(nThreads, new BuildThreadFactory());
         CompletionService<ProjectSegment> service = new ExecutorCompletionService<>(executor);
+        ProjectSegment rootSegment = deferredRootSegment(session, projectBuilds, taskSegments, parallel);
+        DeferredRoot root = rootSegment == null ? null : new DeferredRoot(rootSegment, new AtomicReference<>());
 
         for (TaskSegment taskSegment : taskSegments) {
             ProjectBuildList segmentProjectBuilds = projectBuilds.getByTaskSegment(taskSegment);
@@ -101,7 +107,7 @@ public class MultiThreadedBuilder implements Builder {
                         new ConcurrencyDependencyGraph(segmentProjectBuilds, session.getProjectDependencyGraph());
 
                 multiThreadedProjectTaskSegmentBuild(
-                        analyzer, reactorContext, session, service, taskSegment, projectBuildMap);
+                        analyzer, reactorContext, session, service, taskSegment, projectBuildMap, root);
                 if (reactorContext.getReactorBuildStatus().isHalted()) {
                     break;
                 }
@@ -113,6 +119,36 @@ public class MultiThreadedBuilder implements Builder {
 
         executor.shutdown();
         executor.awaitTermination(Long.MAX_VALUE, TimeUnit.MILLISECONDS);
+
+        // Fail-fast can stop the completion loop before it receives the root's result.
+        DeferredRootBuild deferred = root == null ? null : root.build().get();
+        if (deferred != null) {
+            boolean requiredWorkSucceeded = !session.getResult().hasExceptions()
+                    && projectBuilds.getProjects().stream()
+                            .filter(project -> project != rootSegment.getProject())
+                            .allMatch(project -> session.getResult().getBuildSummary(project) instanceof BuildSuccess);
+            try {
+                lifecycleModuleBuilder.completeDeferredRootProject(
+                        rootSegment.getSession(), session, reactorContext, deferred, requiredWorkSucceeded);
+            } catch (RuntimeException e) {
+                // The module builder already reported the failure.
+            }
+        }
+    }
+
+    private ProjectSegment deferredRootSegment(
+            MavenSession session, ProjectBuildList projectBuilds, List<TaskSegment> taskSegments, boolean parallel) {
+        if (!parallel || !"multithreaded".equals(session.getRequest().getBuilderId()) || taskSegments.size() != 1) {
+            return null;
+        }
+        TaskSegment segment = taskSegments.get(0);
+        if (segment.isAggregating()
+                || segment.getTasks().size() != 1
+                || !(segment.getTasks().get(0) instanceof LifecycleTask)) {
+            return null;
+        }
+        MavenProject root = session.getTopLevelProject();
+        return root != null && root.isExecutionRoot() ? projectBuilds.findByMavenProject(root) : null;
     }
 
     private void multiThreadedProjectTaskSegmentBuild(
@@ -121,7 +157,8 @@ public class MultiThreadedBuilder implements Builder {
             MavenSession rootSession,
             CompletionService<ProjectSegment> service,
             TaskSegment taskSegment,
-            Map<MavenProject, ProjectSegment> projectBuildList) {
+            Map<MavenProject, ProjectSegment> projectBuildList,
+            DeferredRoot root) {
         // gather artifactIds which are not unique so that the respective thread names can be extended with the groupId
         Set<String> duplicateArtifactIds = projectBuildList.keySet().stream()
                 .map(MavenProject::getArtifactId)
@@ -136,8 +173,8 @@ public class MultiThreadedBuilder implements Builder {
         for (MavenProject mavenProject : analyzer.getRootSchedulableBuilds()) {
             ProjectSegment projectSegment = projectBuildList.get(mavenProject);
             logger.debug("Scheduling: {}", projectSegment.getProject());
-            Callable<ProjectSegment> cb =
-                    createBuildCallable(rootSession, projectSegment, reactorContext, taskSegment, duplicateArtifactIds);
+            Callable<ProjectSegment> cb = createBuildCallable(
+                    rootSession, projectSegment, reactorContext, taskSegment, duplicateArtifactIds, root);
             service.submit(cb);
         }
 
@@ -151,13 +188,19 @@ public class MultiThreadedBuilder implements Builder {
 
                 // MNG-6170: Only schedule other modules from reactor if we have more modules to build than one.
                 if (analyzer.getNumberOfBuilds() > 1) {
+                    // Ordinary root work is sufficient to release dependents.
                     final List<MavenProject> newItemsThatCanBeBuilt =
                             analyzer.markAsFinished(projectBuild.getProject());
                     for (MavenProject mavenProject : newItemsThatCanBeBuilt) {
                         ProjectSegment scheduledDependent = projectBuildList.get(mavenProject);
                         logger.debug("Scheduling: {}", scheduledDependent);
                         Callable<ProjectSegment> cb = createBuildCallable(
-                                rootSession, scheduledDependent, reactorContext, taskSegment, duplicateArtifactIds);
+                                rootSession,
+                                scheduledDependent,
+                                reactorContext,
+                                taskSegment,
+                                duplicateArtifactIds,
+                                root);
                         service.submit(cb);
                     }
                 }
@@ -177,7 +220,8 @@ public class MultiThreadedBuilder implements Builder {
             final ProjectSegment projectBuild,
             final ReactorContext reactorContext,
             final TaskSegment taskSegment,
-            final Set<String> duplicateArtifactIds) {
+            final Set<String> duplicateArtifactIds,
+            final DeferredRoot root) {
         return () -> {
             final Thread currentThread = Thread.currentThread();
             final String originalThreadName = currentThread.getName();
@@ -189,8 +233,14 @@ public class MultiThreadedBuilder implements Builder {
             currentThread.setName("mvn-builder-" + threadNameSuffix);
 
             try {
-                lifecycleModuleBuilder.buildProject(
-                        projectBuild.getSession(), rootSession, reactorContext, project, taskSegment);
+                if (root != null && projectBuild == root.segment()) {
+                    root.build()
+                            .set(lifecycleModuleBuilder.buildProjectWithDeferredRootAggregators(
+                                    projectBuild.getSession(), rootSession, reactorContext, project, taskSegment));
+                } else {
+                    lifecycleModuleBuilder.buildProject(
+                            projectBuild.getSession(), rootSession, reactorContext, project, taskSegment);
+                }
 
                 return projectBuild;
             } finally {
@@ -198,4 +248,6 @@ public class MultiThreadedBuilder implements Builder {
             }
         };
     }
+
+    private record DeferredRoot(ProjectSegment segment, AtomicReference<DeferredRootBuild> build) {}
 }

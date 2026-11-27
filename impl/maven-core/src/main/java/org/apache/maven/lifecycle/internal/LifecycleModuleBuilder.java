@@ -88,7 +88,16 @@ public class LifecycleModuleBuilder {
 
     DeferredRootBuild buildProjectWithDeferredRootAggregators(
             MavenSession session, ReactorContext reactorContext, MavenProject project, TaskSegment taskSegment) {
-        return buildProject(session, session, reactorContext, project, taskSegment, true);
+        return buildProjectWithDeferredRootAggregators(session, session, reactorContext, project, taskSegment);
+    }
+
+    public DeferredRootBuild buildProjectWithDeferredRootAggregators(
+            MavenSession session,
+            MavenSession rootSession,
+            ReactorContext reactorContext,
+            MavenProject project,
+            TaskSegment taskSegment) {
+        return buildProject(session, rootSession, reactorContext, project, taskSegment, true);
     }
 
     private DeferredRootBuild buildProject(
@@ -174,6 +183,15 @@ public class LifecycleModuleBuilder {
             ReactorContext reactorContext,
             DeferredRootBuild deferred,
             boolean requiredWorkSucceeded) {
+        completeDeferredRootProject(session, session, reactorContext, deferred, requiredWorkSucceeded);
+    }
+
+    public void completeDeferredRootProject(
+            MavenSession session,
+            MavenSession rootSession,
+            ReactorContext reactorContext,
+            DeferredRootBuild deferred,
+            boolean requiredWorkSucceeded) {
         if (deferred.completed) {
             throw new IllegalStateException("The deferred root build is already complete");
         }
@@ -199,7 +217,7 @@ public class LifecycleModuleBuilder {
                             new BuildSuccess(project, Duration.between(deferred.buildStartTime, MonotonicClock.now())));
             eventCatapult.fire(ExecutionEvent.Type.ProjectSucceeded, session, null);
         } catch (Throwable t) {
-            builderCommon.handleBuildError(reactorContext, session, session, project, t, deferred.buildStartTime);
+            builderCommon.handleBuildError(reactorContext, rootSession, session, project, t, deferred.buildStartTime);
             projectExecutionListener.afterProjectExecutionFailure(new ProjectExecutionEvent(session, project, t));
             if (t instanceof RuntimeException runtimeException) {
                 throw runtimeException;
@@ -213,7 +231,7 @@ public class LifecycleModuleBuilder {
         }
     }
 
-    static final class DeferredRootBuild {
+    public static final class DeferredRootBuild {
         private final RootAggregatorExecutionPlan plan;
         private final Instant buildStartTime;
         private boolean completed;
