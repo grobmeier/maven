@@ -374,8 +374,8 @@ public class BuildPlanExecutor {
                 plan.then(segment);
             }
 
-            // Create plan, setup and teardown
-            for (MavenProject project : plan.getAllProjects().keySet()) {
+            // Create plan, setup and teardown for projects with scheduled work.
+            for (MavenProject project : plan.projects().toList()) {
                 BuildStep pplan = new BuildStep(PLAN, project, null);
                 pplan.status.set(PLANNING); // the plan step always need planning
                 BuildStep setup = new BuildStep(SETUP, project, null);

@@ -260,6 +260,17 @@ class MavenITgh13762AfterAllVsAggregatorTest extends AbstractMavenIntegrationTes
         assertEquals(legacy, migrated, AFTER_CHILDREN_CLAIM);
     }
 
+    @Test
+    void testStandaloneAfterChildrenGoalRunsOnlyOnRootProject() throws Exception {
+        final Path reactor = prepare();
+
+        final Observation legacy = observeBuild(reactor, "standalone-legacy", List.of(LEGACY_GOAL));
+        final Observation migrated = observeBuild(reactor, "standalone-after-children", List.of(AFTER_CHILDREN_GOAL));
+
+        assertRootOnly(migrated);
+        assertEquals(legacy, migrated, AFTER_CHILDREN_CLAIM);
+    }
+
     private static void assertRootOnly(Observation migrated) {
         assertTrue(migrated.buildSucceeded());
         assertNotNull(migrated.seenByRootProbe());
