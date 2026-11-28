@@ -28,6 +28,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Checks whether a goal declared with {@code aggregator = true} can be migrated to a form without the deprecated
@@ -240,11 +243,8 @@ class MavenITgh13762AfterAllVsAggregatorTest extends AbstractMavenIntegrationTes
     }
 
     /**
-     * Invoked directly on the command line (together with {@code validate}, see {@link #observeGoal}), the legacy
-     * aggregator runs once, on the root project. The goal declaring
-     * {@code @After(type = CHILDREN)} runs in every module, because a direct invocation is only treated as aggregating
-     * for the {@code aggregator} flag, and an {@code @After} constraint only applies to lifecycle bindings. Expected to
-     * fail even with the proposed change of the concurrent builder.
+     * A direct invocation of a goal declaring {@code @After(type = CHILDREN)} runs once on the root project,
+     * like a legacy aggregator. The direct invocation does not request the goal's lifecycle phase.
      */
     @Test
     void testDirectInvocationOfAfterChildrenMigrationRunsOnlyOnRootProject() throws Exception {
@@ -256,7 +256,14 @@ class MavenITgh13762AfterAllVsAggregatorTest extends AbstractMavenIntegrationTes
         final Observation migrated = observeGoal(reactor, "cli-after-children", AFTER_CHILDREN_GOAL);
 
         // THEN
+        assertRootOnly(migrated);
         assertEquals(legacy, migrated, AFTER_CHILDREN_CLAIM);
+    }
+
+    private static void assertRootOnly(Observation migrated) {
+        assertTrue(migrated.buildSucceeded());
+        assertNotNull(migrated.seenByRootProbe());
+        assertFalse(migrated.probeRanInModuleA() || migrated.probeRanInModuleB());
     }
 
     /**

@@ -148,7 +148,8 @@ public class ConcurrentLifecycleStarter implements LifecycleStarter {
                 MojoDescriptor mojoDescriptor =
                         mojoDescriptorCreator.getMojoDescriptor(task, session, session.getTopLevelProject());
 
-                boolean aggregating = mojoDescriptor.isAggregator() || !mojoDescriptor.isProjectRequired();
+                boolean aggregating =
+                        BuildPlanExecutor.aggregatesChildren(mojoDescriptor) || !mojoDescriptor.isProjectRequired();
 
                 if (currentSegment == null || currentSegment.isAggregating() != aggregating) {
                     currentSegment = new TaskSegment(aggregating);

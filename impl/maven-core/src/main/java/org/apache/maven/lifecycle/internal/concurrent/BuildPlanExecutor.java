@@ -221,8 +221,8 @@ public class BuildPlanExecutor {
     }
 
     /**
-     * Tells whether a Mojo operates on a project together with its child modules. Such a Mojo gets the aggregation
-     * semantics of this builder: it runs once, on the reactor project that declares it, after all child modules
+     * Tells whether a Mojo operates on a project together with its child modules. When bound to a lifecycle phase,
+     * it runs once, on the reactor project that declares it, after all child modules
      * reached the phase it is bound to; copies inherited by the child modules are suppressed; and it does not run
      * if work in the aggregated modules failed or the bound phase is not part of the build.
      * <p>
@@ -232,7 +232,7 @@ public class BuildPlanExecutor {
      * @param descriptor the descriptor of the Mojo
      * @return {@code true} if the Mojo aggregates over the child modules of the project it runs on
      */
-    private static boolean aggregatesChildren(MojoDescriptor descriptor) {
+    static boolean aggregatesChildren(MojoDescriptor descriptor) {
         if (descriptor.isAggregator()) {
             return true;
         }
